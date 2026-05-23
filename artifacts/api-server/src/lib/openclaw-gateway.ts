@@ -21,6 +21,13 @@ const CONFIG_PATH = path.join(
   "openclaw-runtime.json",
 );
 
+// Project-owned skills live in artifacts/api-server/plugin-skills/. From the
+// compiled bundle (dist/index.mjs) that resolves to ../plugin-skills.
+const PROJECT_SKILLS_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../plugin-skills",
+);
+
 let gatewayProcess: ChildProcess | null = null;
 let gatewayReady = false;
 
@@ -86,6 +93,11 @@ function buildConfig(token: string): object {
         endpoints: {
           chatCompletions: { enabled: true },
         },
+      },
+    },
+    skills: {
+      load: {
+        extraDirs: [PROJECT_SKILLS_DIR],
       },
     },
     agents: {
