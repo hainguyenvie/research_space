@@ -809,7 +809,8 @@ export async function generateDailyReport(): Promise<ReportResult> {
   const G_CLIENT_SECRET = requiredEnv("GOOGLE_CLIENT_SECRET");
   const G_REFRESH = requiredEnv("GOOGLE_REFRESH_TOKEN");
   const G_FOLDER = requiredEnv("GOOGLE_DOCS_REPORT_FOLDER_ID");
-  const DOC_NAME = process.env["GOOGLE_DOCS_REPORT_DOC_NAME"] ?? DEFAULT_DOC_NAME;
+  const DOC_NAME = (process.env["GOOGLE_DOCS_REPORT_DOC_NAME"] ?? DEFAULT_DOC_NAME)
+    .replace(/^["']|["']$/g, "").trim();
 
   // 1. Linear
   const cycleData = await linearQuery<{ cycles: { nodes: ActiveCycle[] } }>(
