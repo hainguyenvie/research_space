@@ -1,0 +1,159 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: openclaw
+    description: OpenClaw AI assistant operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /openclaw/health:
+    get:
+      operationId: openclawHealth
+      tags: [openclaw]
+      summary: OpenClaw gateway health
+      description: Returns OpenClaw gateway and provider status
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenclawHealth"
+  /openclaw/chat:
+    post:
+      operationId: openclawChat
+      tags: [openclaw]
+      summary: Send a chat message
+      description: Sends a message to the OpenClaw AI agent and returns a reply
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: AI reply
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: OpenAI error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Service unavailable (missing API key)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    OpenclawHealth:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        gateway:
+          type: object
+          properties:
+            ready:
+              type: boolean
+            port:
+              type: integer
+          required: [ready, port]
+        providers:
+          type: object
+          properties:
+            openai:
+              type: boolean
+          required: [openai]
+        channels:
+          type: object
+          properties:
+            telegram:
+              type: boolean
+          required: [telegram]
+      required: [status, gateway, providers, channels]
+    ChatRequest:
+      type: object
+      properties:
+        message:
+          type: string
+          description: The user's message
+        history:
+          type: array
+          description: Previous conversation turns
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+                enum: [user, assistant]
+              content:
+                type: string
+            required: [role, content]
+      required: [message]
+    ChatResponse:
+      type: object
+      properties:
+        reply:
+          type: string
+          description: The AI reply
+        model:
+          type: string
+          description: Model used
+        usage:
+          type: object
+          description: Token usage stats
+          properties:
+            prompt_tokens:
+              type: integer
+            completion_tokens:
+              type: integer
+            total_tokens:
+              type: integer
+      required: [reply, model]
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
