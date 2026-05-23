@@ -21,9 +21,10 @@
  *   GOOGLE_DOCS_REPORT_DOC_NAME (default: "Báo cáo công việc — Resuck Excellent")
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import { logger } from "./logger";
 
 const TZ = "Asia/Ho_Chi_Minh";
@@ -253,44 +254,110 @@ async function getAccessToken(opts: {
   return data.access_token;
 }
 
+// ---------------------------------------------------------------------------
+// Doc ID cache — persists across process restarts so we never rely solely on
+// Drive search index (which can lag up to a minute after creation).
+// ---------------------------------------------------------------------------
+const DOC_CACHE_DIR = path.join(homedir(), ".openclaw", "report-cache");
+const DOC_CACHE_FILE = path.join(DOC_CACHE_DIR, "doc-id.json");
+
+type DocCache = Record<string, string>; // key: `${folderId}::${name}` → docId
+
+function readDocCache(): DocCache {
+  try {
+    return JSON.parse(readFileSync(DOC_CACHE_FILE, "utf-8")) as DocCache;
+  } catch {
+    return {};
+  }
+}
+
+function writeDocCache(cache: DocCache): void {
+  try {
+    mkdirSync(DOC_CACHE_DIR, { recursive: true });
+    writeFileSync(DOC_CACHE_FILE, JSON.stringify(cache, null, 2), "utf-8");
+  } catch (e) {
+    logger.warn({ err: e }, "Could not write doc cache");
+  }
+}
+
+async function verifyDocExists(access: string, docId: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${docId}?fields=id,trashed`,
+      { headers: { Authorization: `Bearer ${access}` } },
+    );
+    if (!res.ok) return false;
+    const data = (await res.json()) as { id?: string; trashed?: boolean };
+    return !!data.id && !data.trashed;
+  } catch {
+    return false;
+  }
+}
+
 async function findOrCreateDoc(
   access: string,
   folderId: string,
   name: string,
 ): Promise<{ id: string; isNew: boolean }> {
+  const cacheKey = `${folderId}::${name}`;
+
+  // 1. Check local cache first (avoids Drive search index lag)
+  const cache = readDocCache();
+  const cachedId = cache[cacheKey];
+  if (cachedId) {
+    const stillExists = await verifyDocExists(access, cachedId);
+    if (stillExists) {
+      logger.info({ docId: cachedId }, "Doc found in local cache");
+      return { id: cachedId, isNew: false };
+    }
+    logger.warn({ docId: cachedId }, "Cached doc no longer exists, will re-create");
+    delete cache[cacheKey];
+    writeDocCache(cache);
+  }
+
+  // 2. Search Drive (may lag after fresh creation, but good for cross-instance lookup)
   const safe = name.replace(/'/g, "\\'");
   const q =
     `name='${safe}' and '${folderId}' in parents and ` +
     `mimeType='application/vnd.google-apps.document' and trashed=false`;
-  const search = (await (
-    await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)`,
-      { headers: { Authorization: `Bearer ${access}` } },
-    )
-  ).json()) as { files?: Array<{ id: string }> };
+  const searchRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)`,
+    { headers: { Authorization: `Bearer ${access}` } },
+  );
+  const search = (await searchRes.json()) as { files?: Array<{ id: string }> };
 
   if (search.files && search.files.length > 0) {
-    return { id: search.files[0]!.id, isNew: false };
+    const docId = search.files[0]!.id;
+    cache[cacheKey] = docId;
+    writeDocCache(cache);
+    logger.info({ docId }, "Doc found via Drive search");
+    return { id: docId, isNew: false };
   }
 
-  const created = (await (
-    await fetch("https://docs.googleapis.com/v1/documents", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${access}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ title: name }),
-    })
-  ).json()) as { documentId?: string };
-  if (!created.documentId) throw new Error("Doc create failed");
+  // 3. Create doc directly inside the folder via Drive Files API
+  //    (avoids the root→folder move step which was silently failing)
+  const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${access}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      name,
+      mimeType: "application/vnd.google-apps.document",
+      parents: [folderId],
+    }),
+  });
+  if (!createRes.ok) {
+    throw new Error(`Doc create failed: ${createRes.status} ${await createRes.text()}`);
+  }
+  const created = (await createRes.json()) as { id?: string };
+  if (!created.id) throw new Error("Doc create returned no id");
 
-  await fetch(
-    `https://www.googleapis.com/drive/v3/files/${created.documentId}?addParents=${folderId}&removeParents=root&fields=id,parents`,
-    { method: "PATCH", headers: { Authorization: `Bearer ${access}` } },
-  );
-
-  return { id: created.documentId, isNew: true };
+  cache[cacheKey] = created.id;
+  writeDocCache(cache);
+  logger.info({ docId: created.id, folderId }, "Doc created in folder");
+  return { id: created.id, isNew: true };
 }
 
 type DocElement = {
